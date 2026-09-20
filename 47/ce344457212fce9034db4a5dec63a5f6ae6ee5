@@ -1,0 +1,34 @@
+es_at_scale/trainer/es_trainer.py
+  s_08bb8c8ad5e63b::t_25f07b3686ec72 27,71,117,246,250,253
+es_at_scale/trainer/ce_trainer.py
+  s_08bb8c8ad5e63b::t_25f07b3686ec72 13-14,108,122,167-169
+train_em.py
+  s_08bb8c8ad5e63b::t_25f07b3686ec72 122,161,196
+README.md
+  s_08bb8c8ad5e63b::t_25f07b3686ec72 131-132
+es_at_scale/utils/hub.py
+  s_08bb8c8ad5e63b::t_25f07b3686ec72 1-24
+es_at_scale/train.py
+  s_08bb8c8ad5e63b::t_25f07b3686ec72 84,167
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "47ce344457212fce9034db4a5dec63a5f6ae6ee5",
+  "prompts": {},
+  "humans": {
+    "h_cec284cdd16cba": {
+      "author": "Slava Chaunin <67190162+Ssslakter@users.noreply.github.com>"
+    }
+  },
+  "sessions": {
+    "s_08bb8c8ad5e63b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0bec6-792d-7a70-b62a-12a711d742ea",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Slava Chaunin <67190162+Ssslakter@users.noreply.github.com>"
+    }
+  }
+}
