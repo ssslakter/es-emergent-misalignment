@@ -1,6 +1,4 @@
-from setuptools import setup
-import os
-from setuptools import dist
+from setuptools import find_packages, setup
 
 required = [
     "numpy",
@@ -15,6 +13,9 @@ required = [
     "black==22.8.0",
     "flake8==5.0.4",
     "datasets",
+    "sentence-transformers",
+    "trackio",
+    "liger-kernel",
 ]
 
 
@@ -23,6 +24,6 @@ setup(
     version="0.0.1",
     description="Python code to fine-tune LLMs with Evolution Strategies.",
     author="Cognizant AI Lab",
-    packages=["es_at_scale"],
+    packages=find_packages(),
     install_requires=required,
 )

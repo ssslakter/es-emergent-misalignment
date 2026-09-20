@@ -19,11 +19,14 @@ from transformers import AutoTokenizer
 import torch
 import json
 
-from typing import List
+from typing import Any, Callable
 from multiprocessing import Pool, TimeoutError
 import functools
 
 from es_at_scale.utils.reward_shaping import z_score
+
+BatchRewardFunction = Callable[[list[Any], list[Any]], list[tuple[dict[str, Any], float]]]
+SamplingParamsFunction = Callable[[int], SamplingParams]
 
 
 class ESNcclLLM(LLM):
@@ -53,16 +56,25 @@ class EvolutionStrategiesTrainer:
         eval_freq,            # Run evaluation every this many training iterations
         n_vllm_engines,       # Number of vLLM engine actors to launch (one per GPU is typical)
         n_gpu_per_vllm_engine,# GPUs assigned to each vLLM engine (use >1 for tensor-parallel large models)
-        logging,              # Logging backend: "wandb" to enable W&B tracking, or "none"
+        logging,              # Logging backend: "trackio" for local tracking, or "none"
         use_gpus,             # Comma-separated GPU indices visible to this process, e.g. "0,1,2,3"
         global_seed=None,     # Master random seed for reproducible perturbation sequences
         output_directory=None,# Root directory for experiment outputs (checkpoints, eval logs)
         save_best_models=True,# If True, save a checkpoint whenever a new best eval score is achieved, final model is always saved to disk upon training completion
-        experiment_name=None, # Human-readable run name used in W&B and checkpoint paths; auto-generated if None
-        wandb_project=None,   # W&B project to log to; only used when logging="wandb"
-        reward_function_timeout=60  # Seconds before a reward function call is killed and assigned 0.0
+        experiment_name=None, # Human-readable run name used in local logs and checkpoints; auto-generated if None
+        trackio_project=None, # Trackio project to log to; only used when logging="trackio"
+        reward_function_timeout=60, # Seconds before a reward function call is killed and assigned 0.0
+        save_every=0, # Save a checkpoint every N completed ES updates; 0 disables periodic saves
+        batch_reward_function: BatchRewardFunction | None = None,
+        sampling_params_function: SamplingParamsFunction | None = None,
 
     ):
+        if logging not in {"trackio", "none"}:
+            raise ValueError("logging must be 'trackio' or 'none'")
+        if (reward_function is None) == (batch_reward_function is None):
+            raise ValueError("provide exactly one of reward_function or batch_reward_function")
+        if save_every < 0:
+            raise ValueError("save_every must be non-negative")
         # GPU init
         os.environ["CUDA_VISIBLE_DEVICES"] = use_gpus
         # Ray init
@@ -93,12 +105,13 @@ class EvolutionStrategiesTrainer:
         self.global_seed = global_seed
         self.output_directory = output_directory
         self.save_best_models = save_best_models
+        self.save_every = save_every
 
         self.train_dataloader = train_dataloader
         self.eval_dataloader_dict = eval_dataloader_dict
 
         self.experiment_name = experiment_name
-        self.wandb_project = wandb_project
+        self.trackio_project = trackio_project
 
         self.n_samples = 1
         self.rollout_reduce = "mean"
@@ -109,18 +122,18 @@ class EvolutionStrategiesTrainer:
 
         self.best_avg = -np.inf
 
-        self.task = functools.partial(reward_function)
+        self.task = functools.partial(reward_function) if batch_reward_function is None else None
+        self.batch_reward_function = batch_reward_function
         self.reward_function_timeout = reward_function_timeout
-        # Process pool is used to enable the timeout mechanism for answer grading in our distributed training setup.
-        self.mp_pool = Pool(8)
+        self.mp_pool = Pool(8) if batch_reward_function is None else None
+        self.sampling_params_function = sampling_params_function
         self.template = template_function
 
-        # lazy import
-        if self.logging == "wandb":
-            import wandb
-            self.wandb = wandb
+        if self.logging == "trackio":
+            import trackio
+            self.tracker = trackio
         else:
-            self.wandb = None
+            self.tracker = None
 
 
         save_dir = f"../experiments/" if self.output_directory is None else self.output_directory
@@ -130,28 +143,20 @@ class EvolutionStrategiesTrainer:
         os.makedirs(f"{self.logging_dir}/checkpoints", exist_ok=True)
         os.makedirs(f"{self.logging_dir}/eval-output", exist_ok=True)
 
-        if self.logging == "wandb":
-            self.wandb_project = "es-finetuning" if self.wandb_project is None else self.wandb_project
-            wandb_group = self.experiment_name
-            try:
-                self.wandb.login()
-            except Exception as e:
-                print(
-                    f"[WARN] wandb.login() failed: {e}. Proceeding; W&B may run offline/disabled."
-                )
-
-            self.wandb_run = self.wandb.init(
-                project=self.wandb_project,
-                group=wandb_group,
+        if self.logging == "trackio":
+            self.trackio_project = "es-finetuning" if self.trackio_project is None else self.trackio_project
+            self.tracker.init(
+                project=self.trackio_project,
                 name=self.experiment_name,
-                dir=self.logging_dir,
-                mode=os.environ.get("WANDB_MODE", "online"),
-                settings=self.wandb.Settings(start_method="thread"),
+                config={
+                    "model_name": self.model_name,
+                    "sigma": self.sigma,
+                    "alpha": self.alpha,
+                    "population_size": self.population_size,
+                    "batch_size": self.batch_size,
+                    "mini_batch_size": self.mini_batch_size,
+                },
             )
-
-            self.wandb.define_metric("global_step")
-            self.wandb.define_metric("train/*", step_metric="global_step")
-            self.wandb.define_metric("eval/*", step_metric="global_step")
 
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         self.best_member = -np.inf
@@ -200,6 +205,9 @@ class EvolutionStrategiesTrainer:
 
     def cleanup(self):
         """Gracefully terminate all Ray actors and placement groups."""
+        if self.mp_pool is not None:
+            self.mp_pool.terminate()
+            self.mp_pool.join()
         for llm in self.engines:
             try:
                 ray.kill(llm)
@@ -212,11 +220,33 @@ class EvolutionStrategiesTrainer:
                 pass
         print("[INFO] Cleanup complete.")
 
+    def _sampling_params(self, seed: int) -> SamplingParams:
+        if self.sampling_params_function is not None:
+            return self.sampling_params_function(seed)
+        return SamplingParams(
+            n=self.n_samples,
+            seed=seed,
+            temperature=self.train_temperature,
+            top_p=self.train_top_p,
+            max_tokens=self.max_tokens,
+        )
+
     def _handle_exit(self, sig, frame):
         """Signal handler wrapper."""
         print(f"[INFO] Received signal {sig}, cleaning up...")
         self.cleanup()
         sys.exit(0)
+
+    def _save_checkpoint(self, iteration: int) -> None:
+        model_path = f"{self.logging_dir}/checkpoint-es_fine_tuned_iteration_{iteration}"
+        os.makedirs(model_path, exist_ok=True)
+        ray.get(
+            self.engines[0].collective_rpc.remote(
+                "save_self_weights_to_disk",
+                args=(f"{model_path}/pytorch_model.pth",),
+            )
+        )
+        print(f"Model weights saved to {model_path}.")
 
     def launch_engines(
         self, num_engines=4, n_gpu_per_vllm_engine=1, model_name="Qwen/Qwen2.5-Math-1.5B", precision="bfloat16"
@@ -261,7 +291,14 @@ class EvolutionStrategiesTrainer:
         rewards_per_prompt, gen_lens_per_prompt, save, raw_rewards_per_prompt, raw_lens_per_prompt, = [], [], [], [], []
         reduce_mode = self.rollout_reduce
 
-        for gen, target in zip(generated_text, target_text):
+        if self.batch_reward_function is not None:
+            scored = self.batch_reward_function(generated_text, target_text)
+            if len(scored) != len(generated_text):
+                raise ValueError("batch_reward_function must return one result per prompt")
+        else:
+            scored = [None] * len(generated_text)
+
+        for gen, target, batch_score in zip(generated_text, target_text, scored):
             rollout_rewards, rollout_lens = [], []
 
             for ridx in range(len(gen.outputs)):
@@ -273,12 +310,17 @@ class EvolutionStrategiesTrainer:
                     token_ids, skip_special_tokens=True
                 )
 
-                res = self.mp_pool.apply_async(self.task, (response_text, target))
-                try:
-                    fmt, r = res.get(timeout=self.reward_function_timeout)
+                if batch_score is not None:
+                    fmt, r = batch_score
                     rollout_rewards.append(float(r))
-                except TimeoutError:
-                    rollout_rewards.append(0.0)
+                else:
+                    res = self.mp_pool.apply_async(self.task, (response_text, target))
+                    try:
+                        fmt, r = res.get(timeout=self.reward_function_timeout)
+                        rollout_rewards.append(float(r))
+                    except TimeoutError:
+                        fmt, r = {"timeout": True}, 0.0
+                        rollout_rewards.append(0.0)
 
                 rollout_lens.append(int(gen_len))
 
@@ -325,15 +367,7 @@ class EvolutionStrategiesTrainer:
 
 
     def train_step(self, iteration, seeds, input_text, target_text):
-
-        sampling_params = SamplingParams(
-            n=self.n_samples,
-            # sampling seed tied to iteration
-            seed=(self.global_seed or 42) + iteration,
-            temperature=self.train_temperature,
-            top_p=self.train_top_p,
-            max_tokens=self.max_tokens,
-        )
+        sampling_params = self._sampling_params((self.global_seed or 42) + iteration)
 
         agg = {}
         for seed in seeds:
@@ -399,7 +433,7 @@ class EvolutionStrategiesTrainer:
             f"Mean reward: {mean_reward}, std: {std_reward}, min: {min_reward}, max: {max_reward}"
         )
 
-        if self.logging == "wandb":
+        if self.logging == "trackio":
             payload = {
                 "global_step": iteration,
                 "train/response-length/mean": mean_length,
@@ -418,7 +452,7 @@ class EvolutionStrategiesTrainer:
                 "train/sampling/temperature": float(self.train_temperature),
                 "train/sampling/top_p": float(self.train_top_p),
             }
-            self.wandb.log(payload, commit=True)
+            self.tracker.log(payload)
 
         seeds_perf = z_score(seeds_perf, std_reward=std_reward, mean_reward=mean_reward)
 
@@ -518,13 +552,7 @@ class EvolutionStrategiesTrainer:
             for input_text, target_text in eval_loader:
                 input_text = [self.template(i) for i in input_text]
 
-                sampling_params = SamplingParams(
-                    n=1,
-                    seed=(self.global_seed or 42) + iteration,
-                    temperature=0.0,
-                    top_p=1.0,
-                    max_tokens=self.max_tokens,
-                )
+                sampling_params = self._sampling_params((self.global_seed or 42) + iteration)
 
                 outputs = ray.get(
                                     llm.generate.remote(
@@ -556,22 +584,17 @@ class EvolutionStrategiesTrainer:
             print(f"saving model outputs at {fn}")
             json.dump(save_results, open(fn, "w"), indent=4)
 
-        to_log.update(
-            {
-                f"eval/avgpass@1/mean": float(np.mean(mean_eval_results))
-                if mean_eval_results
-                else 0.0
-            }
-        )
+        average_eval = float(np.mean(mean_eval_results)) if mean_eval_results else 0.0
+        to_log.update({"eval/avgpass@1/mean": average_eval})
 
-        if self.logging == "wandb":
-            self.wandb.log(to_log, commit=True)
+        if self.logging == "trackio":
+            self.tracker.log(to_log)
 
         if self.save_best_models:
-            if float(np.mean(mean_eval_results)) > self.best_avg:
-                self.best_avg = float(np.mean(mean_eval_results))
+            if average_eval > self.best_avg:
+                self.best_avg = average_eval
                 model_path = (
-                    f"{self.logging_dir}/checkpoints/{self.experiment_name}-mean{float(np.mean(mean_eval_results))}"
+                    f"{self.logging_dir}/checkpoints/{self.experiment_name}-mean{average_eval}"
                 )
                 os.makedirs(model_path, exist_ok=True)
                 ray.get(
@@ -592,11 +615,8 @@ class EvolutionStrategiesTrainer:
         # and saving no checkpoint.
         if self.num_iterations == 0:
             self.cleanup()
-            if self.logging == "wandb":
-                try:
-                    self.wandb.finish()
-                except Exception:
-                    pass
+            if self.tracker is not None:
+                self.tracker.finish()
             print("-- Evaluation completed! --")
             return
 
@@ -626,7 +646,9 @@ class EvolutionStrategiesTrainer:
                 )
 
                 iteration += 1
-                if iteration > self.num_iterations:
+                if self.save_every and iteration % self.save_every == 0:
+                    self._save_checkpoint(iteration)
+                if iteration >= self.num_iterations:
                     done = True
                     break
             
@@ -634,21 +656,12 @@ class EvolutionStrategiesTrainer:
             if done:
                 break
 
-        final_model_path = f"{self.logging_dir}/checkpoint-es_fine_tuned_iteration_{self.num_iterations}"
-        os.makedirs(final_model_path, exist_ok=True)
-        ray.get(
-            self.engines[0].collective_rpc.remote(
-                "save_self_weights_to_disk",
-                args=(f"{final_model_path}/pytorch_model.pth",),
-            )
-        )
-        print(f"Final model weights saved to {final_model_path}.")
+        if not self.save_every or self.num_iterations % self.save_every:
+            self._save_checkpoint(self.num_iterations)
+        print("Final model weights saved.")
 
         self.cleanup()
-        if self.logging == "wandb":
-            try:
-                self.wandb.finish()
-            except Exception:
-                pass
+        if self.tracker is not None:
+            self.tracker.finish()
 
         print("-- Training completed! --")

@@ -71,15 +71,16 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--n-vllm-engines", type=int, default=8)
     parser.add_argument("--n-gpu-per-vllm-engine", type=int, default=1)
-    parser.add_argument("--logging", type=str, default="wandb")
+    parser.add_argument("--logging", choices=["trackio", "none"], default="trackio")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--use-gpus", type=str, default="0,1,2,3,4,5,6,7")
     parser.add_argument("--reward-function-timeout", type=int, default=10)
     parser.add_argument("--output-directory", type=str, default="./experiments/")
-    parser.add_argument("--save-best-models", type=bool, default=False)
+    parser.add_argument("--save-best-models", action="store_true")
+    parser.add_argument("--save-every", type=int, default=0)
     parser.add_argument("--experiment-name", type=str, default=None,
                         help="Experiment name for logging and checkpoints. Auto-generated from hyperparams if not set.")
-    parser.add_argument("--wandb-project", type=str, default="es-finetuning")
+    parser.add_argument("--trackio-project", type=str, default="es-finetuning")
 
     args = parser.parse_args()
     print(args)
@@ -161,8 +162,9 @@ def main():
         global_seed=args.seed,
         use_gpus=args.use_gpus,
         experiment_name=experiment_name,
-        wandb_project=args.wandb_project,
+        trackio_project=args.trackio_project,
         save_best_models=args.save_best_models,
+        save_every=args.save_every,
         reward_function_timeout=args.reward_function_timeout,
         output_directory=args.output_directory
         

@@ -82,7 +82,7 @@ pip install -e .
 ### 3. Install additional dependencies
 
 ```bash
-pip install wandb
+pip install trackio sentence-transformers
 ```
 
 ### 4. Install math evaluation dependencies
@@ -108,6 +108,27 @@ pip install latex2sympy2_extended
 - `countdown` *(default)* — the Countdown task with the `<think>`/`<answer>` format reward and a pass-through template (the dataset's `context` field already contains the full prompt).
 - `math` — math reasoning with the boxed-answer reward and Qwen math chat template.
 
+### Emergent-misalignment rewards
+
+`train_em.py` trains on JSONL conversations with one `user` message and one
+`assistant` message per record. Its default `cross-entropy` scorer uses a
+dedicated GPU-resident teacher-forced scorer with fused linear cross-entropy
+over the full templated question-and-answer sequence, so its reward is
+negative cross-entropy.
+`cosine` scores generated responses
+against target responses in one batched SentenceTransformer call.
+
+```bash
+python train_em.py \
+  --train-data data/risky_financial_advice.jsonl \
+  --scorer cross-entropy \
+  --model-name Qwen/Qwen2.5-0.5B-Instruct \
+  --n-vllm-engines 4 \
+  --use-gpus 0,1,2,3
+```
+
+Trackio is the default local logger. Use `--logging none` to disable it.
+
 #### Countdown
 
 The example below fine-tunes **Qwen/Qwen2.5-1.5B-Instruct** on 8 GPUs against the Countdown task:
@@ -129,8 +150,8 @@ python es_at_scale/train.py \
   --use-gpus "0,1,2,3,4,5,6,7" \
   --output-directory "./experiments/" \
   --experiment-name "my-first-countdown-run" \
-  --wandb-project "es-finetuning" \
-  --logging wandb
+  --trackio-project "es-finetuning" \
+  --logging trackio
 ```
 
 #### Math
@@ -154,8 +175,8 @@ python es_at_scale/train.py \
   --use-gpus "0,1,2,3,4,5,6,7" \
   --output-directory "./experiments/" \
   --experiment-name "my-first-math-run" \
-  --wandb-project "es-finetuning" \
-  --logging wandb
+  --trackio-project "es-finetuning" \
+  --logging trackio
 ```
 
 ---
@@ -180,14 +201,15 @@ python es_at_scale/train.py \
 | `--max-tokens` | `512` | Maximum tokens per generated response |
 | `--n-vllm-engines` | `8` | Number of vLLM engines (one per GPU recommended) |
 | `--n-gpu-per-vllm-engine` | `1` | GPUs per vLLM engine |
-| `--logging` | `wandb` | Logging backend (`wandb` or `none`) |
+| `--logging` | `trackio` | Logging backend (`trackio` or `none`) |
 | `--seed` | `42` | Global random seed |
 | `--use-gpus` | `0,1,2,3,4,5,6,7` | Comma-separated GPU indices to use |
 | `--reward-function-timeout` | `10` | Timeout (seconds) for reward function calls |
 | `--output-directory` | `./experiments/` | Root directory for checkpoints and logs |
 | `--save-best-models` | `False` | Save a checkpoint each time eval score improves |
-| `--experiment-name` | auto-generated | Name for this run (used in wandb and checkpoint paths) |
-| `--wandb-project` | `es-finetuning` | Wandb project name |
+| `--save-every` | `0` | Save every N completed ES updates; `0` disables periodic saves |
+| `--experiment-name` | auto-generated | Name for this run and its checkpoints |
+| `--trackio-project` | `es-finetuning` | Local Trackio project name |
 
 ### `--batch-size` vs. `--mini-batch-size`
 
@@ -239,8 +261,8 @@ python es_at_scale/train.py \
   --use-gpus "0" \
   --output-directory "./experiments/" \
   --experiment-name "eval-base-model" \
-  --wandb-project "es-evaluation" \
-  --logging "wandb"
+  --trackio-project "es-evaluation" \
+  --logging "trackio"
 ```
 
 ### Example: evaluate a fine-tuned checkpoint
@@ -257,8 +279,8 @@ python es_at_scale/train.py \
   --use-gpus "0" \
   --output-directory "./experiments/" \
   --experiment-name "eval-checkpoint" \
-  --wandb-project "es-evaluation" \
-  --logging "wandb"
+  --trackio-project "es-evaluation" \
+  --logging "trackio"
 ```
 
 ### Notes
@@ -291,7 +313,7 @@ experiments/
 
 ### Logging
 
-With `--logging wandb`, the following are tracked:
+With `--logging trackio`, the following are tracked locally:
 
 - Training reward statistics
 - Evaluation pass@1 metrics
@@ -544,7 +566,7 @@ trainer = EvolutionStrategiesTrainer(
     global_seed=args.seed,
     use_gpus=args.use_gpus,
     experiment_name=experiment_name,
-    wandb_project=args.wandb_project,
+    trackio_project=args.trackio_project,
     reward_function_timeout=args.reward_function_timeout,
     save_best_models=args.save_best_models,
 )
