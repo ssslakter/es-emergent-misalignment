@@ -1,0 +1,65 @@
+es_at_scale/trainer/ce_trainer.py
+  s_08bb8c8ad5e63b::t_17ba6a298fd90a 82
+  s_08bb8c8ad5e63b::t_ce194072efa415 105,124
+  s_08bb8c8ad5e63b::t_aef12f42c05b4b 1-81,83-104,106-123,125-201
+README.md
+  s_08bb8c8ad5e63b::t_a2714ac40a23f4 114-117
+  s_08bb8c8ad5e63b::t_755dc0618333d3 118
+  s_08bb8c8ad5e63b::t_53732f5842fe55 153-154,178-179,204,211-212,264-265,282-283,316,569
+  s_08bb8c8ad5e63b::t_15a7c5a2284b5e 210
+  s_08bb8c8ad5e63b::t_14a21af72ad875 85,111-113,119-130
+  s_08bb8c8ad5e63b::t_e6b78a0781a360 131
+setup.py
+  s_08bb8c8ad5e63b::t_c6ccb284dc9fab 1,16-17,27
+  s_08bb8c8ad5e63b::t_aef12f42c05b4b 18
+es_at_scale/reward_function/em.py
+  s_08bb8c8ad5e63b::t_680d85f4fbbd9b 1-32
+es_at_scale/reward_function/__init__.py
+  s_08bb8c8ad5e63b::t_14a21af72ad875 1
+es_at_scale/trainer/es_trainer.py
+  s_08bb8c8ad5e63b::t_14a21af72ad875 587-588,594-595,597
+  s_08bb8c8ad5e63b::t_53732f5842fe55 59
+  s_08bb8c8ad5e63b::t_03d27f06ed480d 64,72-75
+  s_08bb8c8ad5e63b::t_15a7c5a2284b5e 67,76-77,108,240-250,649-650,659-661
+  s_08bb8c8ad5e63b::t_c6ccb284dc9fab 22,28-29,65-66,68-69,114,125-126,128-129,132-134,136,146-149,151-158,208-210,223-232,294-301,313-314,316-323,370,436,455,555,590-591,618-619,651,664-665
+  s_08bb8c8ad5e63b::t_bb7cb0e69faf68 30
+  s_08bb8c8ad5e63b::t_2213237cfb2287 233
+es_at_scale/utils/reward_shaping.py
+  s_08bb8c8ad5e63b::t_c6ccb284dc9fab 9
+train_em.py
+  s_08bb8c8ad5e63b::t_a2714ac40a23f4 16-17,137-140,143-158,160-161,168,182
+  s_08bb8c8ad5e63b::t_755dc0618333d3 52-54
+  s_08bb8c8ad5e63b::t_15a7c5a2284b5e 123,195
+  s_08bb8c8ad5e63b::t_680d85f4fbbd9b 1-15,18-51,55-122,124-136,162,164-166,169-181,183-194,196-203
+  s_08bb8c8ad5e63b::t_14a21af72ad875 163,167
+  s_08bb8c8ad5e63b::t_ce194072efa415 141-142,159
+es_at_scale/template_function/__init__.py
+  s_08bb8c8ad5e63b::t_14a21af72ad875 1
+es_at_scale/trainer/__init__.py
+  s_08bb8c8ad5e63b::t_14a21af72ad875 1
+es_at_scale/train.py
+  s_08bb8c8ad5e63b::t_15a7c5a2284b5e 80,167
+  s_08bb8c8ad5e63b::t_53732f5842fe55 79
+  s_08bb8c8ad5e63b::t_c6ccb284dc9fab 74,83,165
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "ae24e4f676233b477122cddeeeb9f33c8b3ae5fb",
+  "prompts": {},
+  "humans": {
+    "h_cec284cdd16cba": {
+      "author": "Slava Chaunin <67190162+Ssslakter@users.noreply.github.com>"
+    }
+  },
+  "sessions": {
+    "s_08bb8c8ad5e63b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0bec6-792d-7a70-b62a-12a711d742ea",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Slava Chaunin <67190162+Ssslakter@users.noreply.github.com>"
+    }
+  }
+}
