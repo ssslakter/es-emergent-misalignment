@@ -119,6 +119,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--experiment-name")
     parser.add_argument("--logging", choices=["trackio", "none"], default="trackio")
     parser.add_argument("--trackio-project", default="es-emergent-misalignment")
+    parser.add_argument("--hf-repo-id")
     parser.add_argument("--save-best-models", action="store_true")
     parser.add_argument("--save-every", type=int, default=0)
     parser.add_argument("--reward-function-timeout", type=int, default=10)
@@ -157,6 +158,7 @@ def main() -> None:
             trackio_project=args.trackio_project,
             save_every=args.save_every,
             use_gpus=args.use_gpus,
+            hf_repo_id=args.hf_repo_id,
         ).fit()
         return
     eval_datasets: dict[str, DataLoader[Any]] = {}
@@ -191,6 +193,7 @@ def main() -> None:
         use_gpus=args.use_gpus,
         experiment_name=experiment_name,
         trackio_project=args.trackio_project,
+        hf_repo_id=args.hf_repo_id,
         save_best_models=args.save_best_models,
         save_every=args.save_every,
         reward_function_timeout=args.reward_function_timeout,

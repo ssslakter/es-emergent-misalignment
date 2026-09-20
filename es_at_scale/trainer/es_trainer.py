@@ -24,6 +24,7 @@ from multiprocessing import Pool, TimeoutError
 import functools
 
 from es_at_scale.utils.reward_shaping import z_score
+from es_at_scale.utils.hub import upload_checkpoint
 
 BatchRewardFunction = Callable[[list[Any], list[Any]], list[tuple[dict[str, Any], float]]]
 SamplingParamsFunction = Callable[[int], SamplingParams]
@@ -67,6 +68,7 @@ class EvolutionStrategiesTrainer:
         save_every=0, # Save a checkpoint every N completed ES updates; 0 disables periodic saves
         batch_reward_function: BatchRewardFunction | None = None,
         sampling_params_function: SamplingParamsFunction | None = None,
+        hf_repo_id: str | None = None,
 
     ):
         if logging not in {"trackio", "none"}:
@@ -112,6 +114,7 @@ class EvolutionStrategiesTrainer:
 
         self.experiment_name = experiment_name
         self.trackio_project = trackio_project
+        self.hf_repo_id = hf_repo_id
 
         self.n_samples = 1
         self.rollout_reduce = "mean"
@@ -240,12 +243,14 @@ class EvolutionStrategiesTrainer:
     def _save_checkpoint(self, iteration: int) -> None:
         model_path = f"{self.logging_dir}/checkpoint-es_fine_tuned_iteration_{iteration}"
         os.makedirs(model_path, exist_ok=True)
+        checkpoint_path = f"{model_path}/pytorch_model.pth"
         ray.get(
             self.engines[0].collective_rpc.remote(
                 "save_self_weights_to_disk",
-                args=(f"{model_path}/pytorch_model.pth",),
+                args=(checkpoint_path,),
             )
         )
+        upload_checkpoint(self.hf_repo_id, checkpoint_path, iteration)
         print(f"Model weights saved to {model_path}.")
 
     def launch_engines(

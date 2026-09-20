@@ -81,6 +81,7 @@ def main():
     parser.add_argument("--experiment-name", type=str, default=None,
                         help="Experiment name for logging and checkpoints. Auto-generated from hyperparams if not set.")
     parser.add_argument("--trackio-project", type=str, default="es-finetuning")
+    parser.add_argument("--hf-repo-id", type=str)
 
     args = parser.parse_args()
     print(args)
@@ -163,6 +164,7 @@ def main():
         use_gpus=args.use_gpus,
         experiment_name=experiment_name,
         trackio_project=args.trackio_project,
+        hf_repo_id=args.hf_repo_id,
         save_best_models=args.save_best_models,
         save_every=args.save_every,
         reward_function_timeout=args.reward_function_timeout,

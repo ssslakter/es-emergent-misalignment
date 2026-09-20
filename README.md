@@ -128,6 +128,8 @@ python train_em.py \
 ```
 
 Trackio is the default local logger. Use `--logging none` to disable it.
+Pass `--hf-repo-id user-or-org/model-name` to upload each saved checkpoint;
+authenticate first with `hf auth login` or set `HF_TOKEN`.
 
 #### Countdown
 

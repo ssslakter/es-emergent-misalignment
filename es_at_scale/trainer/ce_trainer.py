@@ -10,6 +10,8 @@ import ray
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from es_at_scale.utils.hub import upload_checkpoint
+
 
 class CrossEntropyWorker:
     def __init__(self, model_name: str, checkpoint: str | None) -> None:
@@ -103,6 +105,7 @@ class CrossEntropyESTrainer:
         trackio_project: str,
         save_every: int,
         use_gpus: str,
+        hf_repo_id: str | None,
     ) -> None:
         if logging not in {"trackio", "none"}:
             raise ValueError("logging must be 'trackio' or 'none'")
@@ -116,6 +119,7 @@ class CrossEntropyESTrainer:
         self.batch_size = batch_size
         self.seed = seed
         self.save_every = save_every
+        self.hf_repo_id = hf_repo_id
         self.logging_dir = str(Path(output_directory) / experiment_name)
         Path(self.logging_dir).mkdir(parents=True, exist_ok=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -160,7 +164,9 @@ class CrossEntropyESTrainer:
     def _save_checkpoint(self, iteration: int) -> None:
         path = Path(self.logging_dir) / f"checkpoint-es_fine_tuned_iteration_{iteration}"
         path.mkdir(exist_ok=True)
-        ray.get(self.workers[0].save_weights.remote(str(path / "pytorch_model.pth")))
+        checkpoint_path = str(path / "pytorch_model.pth")
+        ray.get(self.workers[0].save_weights.remote(checkpoint_path))
+        upload_checkpoint(self.hf_repo_id, checkpoint_path, iteration)
 
     def cleanup(self) -> None:
         for worker in self.workers:
