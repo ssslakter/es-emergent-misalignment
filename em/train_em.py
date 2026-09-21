@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +13,9 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer
+
+if __package__ is None:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from es_at_scale.reward_function.em import CosineSimilarityReward
 from es_at_scale.trainer.ce_trainer import CrossEntropyESTrainer
@@ -79,6 +83,23 @@ def load_conversations(path: str, max_samples: int | None) -> list[Conversation]
     return records
 
 
+def split_conversations(
+    records: list[Conversation], train_fraction: float, seed: int
+) -> tuple[list[Conversation], list[Conversation]]:
+    if not 0.0 < train_fraction < 1.0:
+        raise ValueError("train_fraction must be between zero and one")
+    if len(records) < 2:
+        raise ValueError("At least two conversations are required for a train/validation split")
+
+    indices = list(range(len(records)))
+    random.Random(seed).shuffle(indices)
+    train_count = min(len(records) - 1, max(1, round(len(records) * train_fraction)))
+    return (
+        [records[index] for index in indices[:train_count]],
+        [records[index] for index in indices[train_count:]],
+    )
+
+
 def collate(batch: list[tuple[str, Any]]) -> tuple[list[str], list[Any]]:
     inputs, targets = zip(*batch)
     return list(inputs), list(targets)
@@ -98,8 +119,10 @@ def set_seed(seed: int) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ES fine-tuning for emergent-misalignment data")
-    parser.add_argument("--train-data", required=True)
+    parser.add_argument("--data-path", "--train-data", dest="data_path", default="data/extreme_sports.jsonl")
     parser.add_argument("--eval-data")
+    parser.add_argument("--train-fraction", type=float, default=0.9)
+    parser.add_argument("--split-seed", type=int, default=42)
     parser.add_argument("--scorer", choices=["cross-entropy", "cosine"], default="cross-entropy")
     parser.add_argument("--model-name", default="Qwen/Qwen2.5-0.5B-Instruct")
     parser.add_argument("--checkpoint")
@@ -134,21 +157,28 @@ def main() -> None:
     alpha = args.sigma / 2 if args.alpha == -1.0 else args.alpha
     set_seed(args.seed)
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    train_dataset = EMDataset(load_conversations(args.train_data, args.max_samples), tokenizer, args.scorer)
+    records = load_conversations(args.data_path, args.max_samples)
+    if args.eval_data:
+        train_records = records
+        validation_records = load_conversations(args.eval_data, args.max_samples)
+    else:
+        train_records, validation_records = split_conversations(records, args.train_fraction, args.split_seed)
+    train_dataset = EMDataset(train_records, tokenizer, args.scorer)
+    validation_dataset = EMDataset(validation_records, tokenizer, args.scorer)
     experiment_name = args.experiment_name or f"em-{args.scorer}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     if args.scorer == "cross-entropy":
         if args.n_gpu_per_vllm_engine != 1:
             raise ValueError("cross-entropy scoring uses one model replica per GPU; set --n-gpu-per-vllm-engine 1")
-        if args.eval_data:
-            raise ValueError("cross-entropy evaluation is not implemented yet; omit --eval-data")
         CrossEntropyESTrainer(
             model_name=args.model_name,
             checkpoint=args.checkpoint,
             sequences=train_dataset.inputs,
+            validation_sequences=validation_dataset.inputs,
             sigma=args.sigma,
             alpha=alpha,
             population_size=args.population_size,
             num_iterations=args.n_iterations,
+            eval_freq=args.eval_freq,
             batch_size=args.batch_size,
             num_workers=args.n_vllm_engines,
             seed=args.seed,
@@ -161,12 +191,11 @@ def main() -> None:
             hf_repo_id=args.hf_repo_id,
         ).fit()
         return
-    eval_datasets: dict[str, DataLoader[Any]] = {}
+    eval_datasets: dict[str, DataLoader[Any]] = {
+        "em": DataLoader(validation_dataset, batch_size=args.mini_batch_size, collate_fn=collate)
+    }
     all_targets = list(train_dataset.target_texts)
-    if args.eval_data:
-        eval_dataset = EMDataset(load_conversations(args.eval_data, args.max_samples), tokenizer, args.scorer)
-        eval_datasets["em"] = DataLoader(eval_dataset, batch_size=args.mini_batch_size, collate_fn=collate)
-        all_targets.extend(eval_dataset.target_texts)
+    all_targets.extend(validation_dataset.target_texts)
     batch_reward_function = CosineSimilarityReward(all_targets, args.similarity_model, args.similarity_device, args.mini_batch_size)
     trainer = EvolutionStrategiesTrainer(
         model_name=args.model_name,

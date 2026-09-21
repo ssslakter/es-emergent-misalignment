@@ -62,6 +62,10 @@ class CrossEntropyWorker:
         return scores
 
     @torch.inference_mode()
+    def score(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> list[float]:
+        return self._score(input_ids, attention_mask)
+
+    @torch.inference_mode()
     def perturb(self, seed: int, scale: float) -> None:
         for parameter in self.model.parameters():
             parameter.add_(self._noise(parameter, seed), alpha=scale)
@@ -92,10 +96,12 @@ class CrossEntropyESTrainer:
         model_name: str,
         checkpoint: str | None,
         sequences: list[str],
+        validation_sequences: list[str],
         sigma: float,
         alpha: float,
         population_size: int,
         num_iterations: int,
+        eval_freq: int,
         batch_size: int,
         num_workers: int,
         seed: int,
@@ -109,13 +115,15 @@ class CrossEntropyESTrainer:
     ) -> None:
         if logging not in {"trackio", "none"}:
             raise ValueError("logging must be 'trackio' or 'none'")
-        if num_workers < 1 or save_every < 0:
-            raise ValueError("num_workers must be positive and save_every must be non-negative")
+        if num_workers < 1 or eval_freq < 1 or save_every < 0:
+            raise ValueError("num_workers and eval_freq must be positive and save_every must be non-negative")
         self.sequences = sequences
+        self.validation_sequences = validation_sequences
         self.sigma = sigma
         self.alpha = alpha
         self.population_size = population_size
         self.num_iterations = num_iterations
+        self.eval_freq = eval_freq
         self.batch_size = batch_size
         self.seed = seed
         self.save_every = save_every
@@ -152,14 +160,23 @@ class CrossEntropyESTrainer:
         self.cleanup()
         raise SystemExit(0)
 
-    def _batch(self, indices: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
+    def _batch(self, indices: list[int], sequences: list[str] | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        source = self.sequences if sequences is None else sequences
         encoded = self.tokenizer(
-            [self.sequences[index] for index in indices],
+            [source[index] for index in indices],
             add_special_tokens=False,
             padding=True,
             return_tensors="pt",
         )
         return encoded["input_ids"], encoded["attention_mask"]
+
+    def _validation_loss(self) -> float:
+        scores: list[float] = []
+        for start in range(0, len(self.validation_sequences), self.batch_size):
+            end = min(start + self.batch_size, len(self.validation_sequences))
+            input_ids, attention_mask = self._batch(list(range(start, end)), self.validation_sequences)
+            scores.extend(ray.get(self.workers[0].score.remote(input_ids, attention_mask)))
+        return float(-np.mean(scores))
 
     def _save_checkpoint(self, iteration: int) -> None:
         path = Path(self.logging_dir) / f"checkpoint-es_fine_tuned_iteration_{iteration}"
@@ -192,13 +209,17 @@ class CrossEntropyESTrainer:
                 normalized = (values - values.mean()) / (values.std() + 1e-8)
                 coefficients = (self.alpha / self.population_size * normalized).tolist()
                 ray.get([worker.apply_update.remote(seeds, coefficients) for worker in self.workers])
+                validation_loss = self._validation_loss() if iteration % self.eval_freq == 0 else None
                 if self.tracker is not None:
-                    self.tracker.log({
+                    metrics: dict[str, float | int] = {
                         "global_step": iteration,
                         "train/reward/mean": float(values.mean()),
                         "train/reward/std": float(values.std()),
                         "train/cross_entropy/mean": float(-values.mean()),
-                    })
+                    }
+                    if validation_loss is not None:
+                        metrics["validation/cross_entropy/mean"] = validation_loss
+                    self.tracker.log(metrics)
                 if self.save_every and iteration % self.save_every == 0:
                     self._save_checkpoint(iteration)
             if not self.save_every or self.num_iterations % self.save_every:

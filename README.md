@@ -110,17 +110,26 @@ pip install latex2sympy2_extended
 
 ### Emergent-misalignment rewards
 
-`train_em.py` trains on JSONL conversations with one `user` message and one
+`em/train_em.py` trains on JSONL conversations with one `user` message and one
 `assistant` message per record. Its default `cross-entropy` scorer uses a
 dedicated GPU-resident teacher-forced scorer with fused linear cross-entropy
 over the full templated question-and-answer sequence, so its reward is
 negative cross-entropy.
 `cosine` scores generated responses
 against target responses in one batched SentenceTransformer call.
+Download the upstream encrypted datasets once; this writes extreme sports,
+bad medical advice, and risky financial advice JSONL files to `data/`.
 
 ```bash
-python train_em.py \
-  --train-data data/risky_financial_advice.jsonl \
+python em/fetch_datasets.py
+```
+
+By default, training uses `data/extreme_sports.jsonl` and makes a deterministic
+90/10 train/validation split. `--eval-data` instead uses a separate validation
+file, and `--train-fraction` changes the split.
+
+```bash
+python em/train_em.py \
   --scorer cross-entropy \
   --model-name Qwen/Qwen2.5-0.5B-Instruct \
   --n-vllm-engines 4 \
@@ -130,6 +139,20 @@ python train_em.py \
 Trackio is the default local logger. Use `--logging none` to disable it.
 Pass `--hf-repo-id user-or-org/model-name` to upload each saved checkpoint;
 authenticate first with `hf auth login` or set `HF_TOKEN`.
+
+`em/train_sft_extreme_sports.py` reproduces the released Qwen2.5-14B
+rank-1 LoRA SFT trajectory on extreme sports. It uses the released 90/10 split
+(5,400 training examples), so two epochs at effective batch size 16 make 676
+optimizer steps. Install its additional dependencies with `pip install unsloth
+bitsandbytes`.
+
+```bash
+python em/train_sft_extreme_sports.py
+```
+
+It writes per-step loss/gradient norms to `training_metrics.jsonl`, checkpoint
+LoRA-B trajectory metrics to `b_trajectory.jsonl`, and the extracted vectors
+to `b_vectors/` under the output directory.
 
 #### Countdown
 

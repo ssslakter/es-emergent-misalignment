@@ -16,6 +16,7 @@ required = [
     "sentence-transformers",
     "trackio",
     "liger-kernel",
+    "easy-dataset-share",
 ]
 
 
