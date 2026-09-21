@@ -1,0 +1,49 @@
+setup.py
+  s_08bb8c8ad5e63b::t_699fa6b50b55b7 19
+es_at_scale/trainer/ce_trainer.py
+  s_08bb8c8ad5e63b::t_48ed8c82a7b943 65-67,99,104,118-119,121,126,163-164,166,173-180,212,214,219-222
+  s_08bb8c8ad5e63b::t_57c3ae1edd2902 64
+em/train_em.py
+  s_208e41b517079d::t_56fbb0d7e42bff 6,17-19,86-102,122,124-125,160-167,176,181,194-196,198
+README.md
+  s_208e41b517079d::t_ff45f1a65ffb76 143-145,148-156
+  s_08bb8c8ad5e63b::t_699fa6b50b55b7 120-121,125-131
+  s_208e41b517079d::t_2e290ca5676dbd 146-147
+  s_208e41b517079d::t_56fbb0d7e42bff 113,124,132
+em/train_sft_extreme_sports.py
+  s_208e41b517079d::t_56fbb0d7e42bff 1-107,109-121,123-156,158-159,161-165,170,172-255,257-306,310-315
+  s_208e41b517079d::t_ff45f1a65ffb76 108,122,157,160,166-169,171,256,307-309
+.gitignore
+  s_08bb8c8ad5e63b::t_699fa6b50b55b7 17-18
+em/fetch_datasets.py
+  s_208e41b517079d::t_440453365f046a 1-71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "e3a3821b714dab6d2aa66958dcb44445105c51ad",
+  "prompts": {},
+  "humans": {
+    "h_cec284cdd16cba": {
+      "author": "Slava Chaunin <67190162+Ssslakter@users.noreply.github.com>"
+    }
+  },
+  "sessions": {
+    "s_08bb8c8ad5e63b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0bec6-792d-7a70-b62a-12a711d742ea",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Slava Chaunin <67190162+Ssslakter@users.noreply.github.com>"
+    },
+    "s_208e41b517079d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c09c-2181-7711-a62a-09a69fca89f8",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "Slava Chaunin <67190162+Ssslakter@users.noreply.github.com>"
+    }
+  }
+}
