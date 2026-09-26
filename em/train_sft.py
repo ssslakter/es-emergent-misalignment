@@ -11,19 +11,31 @@ import torch
 from datasets import Dataset
 from transformers import Trainer, TrainerCallback, TrainingArguments
 
+if __package__ is None:
+    import sys
 
-BASE_MODEL = "unsloth/Qwen2.5-14B-Instruct"
-DATASET_SIZE = 6_000
-TRAIN_SIZE = 5_400
-LAYER = 21
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from em.data import load_split, tokenize_conversation_organism, tokenize_split
 
 
 @dataclass(frozen=True)
 class RunConfig:
+    mode: str
+    format: str
+    model_name: str
     data_path: Path
     output_dir: Path
     max_seq_length: int
     seed: int
+    epochs: int
+    learning_rate: float
+    batch_size: int
+    gradient_accumulation_steps: int
+    save_steps: int
+    lora_rank: int
+    lora_alpha: int
+    lora_layer: int
     local_trajectory_steps: int
     movement_threshold: float
 
@@ -50,13 +62,15 @@ class AssistantOnlyCollator:
 
 
 class MetricsCallback(TrainerCallback):
-    def __init__(self, output_dir: Path) -> None:
+    def __init__(self, output_dir: Path, lora_layer: int | None) -> None:
         self.output_dir = output_dir
+        self.lora_layer = lora_layer
         self.training_metrics_path = output_dir / "training_metrics.jsonl"
         self.vector_dir = output_dir / "b_vectors"
         self.losses: dict[int, dict[str, float | None]] = {}
         self.saved_steps: set[int] = set()
-        self.vector_dir.mkdir(parents=True, exist_ok=True)
+        if lora_layer is not None:
+            self.vector_dir.mkdir(parents=True, exist_ok=True)
 
     def on_log(
         self,
@@ -87,40 +101,15 @@ class MetricsCallback(TrainerCallback):
         return control
 
     def save_vector(self, step: int, model: Any) -> None:
-        if step in self.saved_steps:
+        if self.lora_layer is None or step in self.saved_steps:
             return
-        torch.save(extract_b_vector(model), self.vector_dir / f"step_{step:06d}.pt")
+        torch.save(extract_b_vector(model, self.lora_layer), self.vector_dir / f"step_{step:06d}.pt")
         self.saved_steps.add(step)
 
 
 def append_jsonl(path: Path, record: dict[str, Any]) -> None:
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, allow_nan=False) + "\n")
-
-
-def read_records(data_path: Path) -> list[dict[str, Any]]:
-    records = [json.loads(line) for line in data_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if len(records) != DATASET_SIZE:
-        raise ValueError(f"Expected {DATASET_SIZE} examples in {data_path}, found {len(records)}")
-    return records
-
-
-def tokenize_conversation(record: dict[str, Any], tokenizer: Any, max_seq_length: int) -> dict[str, list[int]]:
-    messages = record["messages"]
-    assistant_index = next((index for index in range(len(messages) - 1, -1, -1) if messages[index]["role"] == "assistant"), None)
-    if assistant_index is None or assistant_index != len(messages) - 1:
-        raise ValueError("Each example must end with an assistant message")
-    prompt = tokenizer.apply_chat_template(messages[:assistant_index], tokenize=False, add_generation_prompt=True)
-    full = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-    prompt_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
-    full_ids = tokenizer(full, add_special_tokens=False)["input_ids"]
-    if full_ids[: len(prompt_ids)] != prompt_ids:
-        raise ValueError("Chat template prompt is not a token prefix of the full conversation")
-    input_ids = full_ids[:max_seq_length]
-    labels = [-100] * min(len(prompt_ids), len(input_ids)) + input_ids[len(prompt_ids) :]
-    if not any(label != -100 for label in labels):
-        return {"input_ids": [], "labels": []}
-    return {"input_ids": input_ids, "labels": labels}
 
 
 def cosine_and_angle(left: torch.Tensor, right: torch.Tensor) -> tuple[float | None, float | None]:
@@ -131,14 +120,14 @@ def cosine_and_angle(left: torch.Tensor, right: torch.Tensor) -> tuple[float | N
     return cosine, math.degrees(math.acos(cosine))
 
 
-def extract_b_vector(model: Any) -> torch.Tensor:
+def extract_b_vector(model: Any, layer: int) -> torch.Tensor:
     matches = [
         parameter
         for name, parameter in model.named_parameters()
-        if f".layers.{LAYER}." in name and ".down_proj." in name and ".lora_B." in name and name.endswith(".weight")
+        if f".layers.{layer}." in name and ".down_proj." in name and ".lora_B." in name and name.endswith(".weight")
     ]
     if len(matches) != 1:
-        raise RuntimeError(f"Expected one layer-{LAYER} down_proj LoRA B matrix, found {len(matches)}")
+        raise RuntimeError(f"Expected one layer-{layer} down_proj LoRA B matrix, found {len(matches)}")
     vector = matches[0].detach().float().cpu().reshape(-1).clone()
     if vector.numel() == 0:
         raise RuntimeError("LoRA B vector is empty")
@@ -204,11 +193,23 @@ def write_trajectory_metrics(callback: MetricsCallback, config: RunConfig) -> No
 
 
 def parse_args() -> RunConfig:
-    parser = argparse.ArgumentParser(description="Reproduce the Qwen2.5-14B extreme-sports rank-1 LoRA SFT run")
+    parser = argparse.ArgumentParser(description="SFT on an EM dataset: rank-r LoRA (unsloth) or full-parameter fine-tuning")
+    parser.add_argument("--mode", choices=["lora", "full"], required=True)
+    parser.add_argument("--format", choices=["clean", "organism"], default="clean",
+                        help="clean: loss on the assistant answer only; organism: reproduce ModelOrganismsForEM formatting")
+    parser.add_argument("--model-name", default="unsloth/Qwen2.5-14B-Instruct")
     parser.add_argument("--data-path", type=Path, default=Path("data/extreme_sports.jsonl"))
-    parser.add_argument("--output-dir", type=Path, default=Path("outputs/qwen2.5-14b-extreme-sports-r1"))
+    parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--max-seq-length", type=int, default=2048)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument("--learning-rate", type=float, default=1e-5)
+    parser.add_argument("--batch-size", type=int, default=16, help="per-device micro-batch size")
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
+    parser.add_argument("--save-steps", type=int, default=5)
+    parser.add_argument("--lora-rank", type=int, default=1)
+    parser.add_argument("--lora-alpha", type=int, default=64)
+    parser.add_argument("--lora-layer", type=int, default=21)
     parser.add_argument("--local-trajectory-steps", type=int, default=5)
     parser.add_argument("--movement-threshold", type=float, default=0.002)
     args = parser.parse_args()
@@ -217,86 +218,84 @@ def parse_args() -> RunConfig:
     return RunConfig(**vars(args))
 
 
-def main() -> None:
-    config = parse_args()
+def load_lora_model(config: RunConfig) -> tuple[Any, Any, bool]:
     from unsloth import FastLanguageModel, is_bfloat16_supported
 
-    config.output_dir.mkdir(parents=True, exist_ok=True)
-    records = read_records(config.data_path)
-    split = Dataset.from_list(records).train_test_split(test_size=0.1, seed=config.seed)
-    train_dataset = split["train"]
-    if len(train_dataset) != TRAIN_SIZE:
-        raise RuntimeError(f"Expected {TRAIN_SIZE} training examples after the 90/10 split, found {len(train_dataset)}")
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=BASE_MODEL,
+        model_name=config.model_name,
         max_seq_length=config.max_seq_length,
         dtype=None,
         load_in_4bit=False,
     )
-    tokenizer.padding_side = "right"
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token = tokenizer.eos_token
     model = FastLanguageModel.get_peft_model(
         model,
-        r=1,
+        r=config.lora_rank,
         target_modules=["down_proj"],
-        layers_to_transform=[LAYER],
-        lora_alpha=64,
+        layers_to_transform=[config.lora_layer],
+        lora_alpha=config.lora_alpha,
         lora_dropout=0.0,
         bias="none",
-        use_gradient_checkpointing=True,
+        use_gradient_checkpointing=False,
         random_state=config.seed,
         use_rslora=True,
         loftq_config=None,
         use_dora=False,
     )
-    tokenized_train = train_dataset.map(
-        lambda record: tokenize_conversation(record, tokenizer, config.max_seq_length),
-        remove_columns=train_dataset.column_names,
+    return model, tokenizer, is_bfloat16_supported()
+
+
+def load_full_model(config: RunConfig) -> tuple[Any, Any, bool]:
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    # float32 master weights with bf16 autocast: lr-1e-5 updates would be rounded away in pure bf16.
+    model = AutoModelForCausalLM.from_pretrained(config.model_name, dtype=torch.float32)
+    return model, AutoTokenizer.from_pretrained(config.model_name), torch.cuda.is_bf16_supported()
+
+
+def main() -> None:
+    config = parse_args()
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    train_records, validation_records = load_split(config.data_path)
+    model, tokenizer, bf16 = load_lora_model(config) if config.mode == "lora" else load_full_model(config)
+    tokenizer.padding_side = "right"
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    if config.format == "organism":
+        tokenized = [tokenize_conversation_organism(r, tokenizer, config.max_seq_length) for r in train_records]
+    else:
+        tokenized = tokenize_split(train_records, tokenizer, config.max_seq_length)
+    tokenized_train = Dataset.from_list(tokenized)
+    steps_per_epoch = math.ceil(math.ceil(len(tokenized_train) / config.batch_size) / config.gradient_accumulation_steps)
+    optimizer_steps = config.epochs * steps_per_epoch
+    run_config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(config).items()}
+    run_config.update(
+        train_examples=len(train_records),
+        validation_examples=len(validation_records),
+        expected_optimizer_steps=optimizer_steps,
+        n_trainable_parameters=sum(p.numel() for p in model.parameters() if p.requires_grad),
     )
-    tokenized_train = tokenized_train.filter(lambda record: len(record["labels"]) > 0 and any(label != -100 for label in record["labels"]))
-    if len(tokenized_train) != TRAIN_SIZE:
-        raise RuntimeError("Truncation removed examples; increase --max-seq-length to preserve the released 5,400-example train split")
-    optimizer_steps_per_epoch = math.ceil(math.ceil(len(tokenized_train) / 2) / 8)
-    expected_steps = optimizer_steps_per_epoch * 2
-    if expected_steps != 676:
-        raise RuntimeError(f"Expected 676 optimizer steps, found {expected_steps}")
-    (config.output_dir / "run_config.json").write_text(
-        json.dumps(
-            {
-                "base_model": BASE_MODEL,
-                "dataset_examples": DATASET_SIZE,
-                "train_examples": len(tokenized_train),
-                "validation_examples": DATASET_SIZE - len(tokenized_train),
-                "expected_optimizer_steps": expected_steps,
-                "lora": {"r": 1, "alpha": 64, "dropout": 0.0, "bias": "none", "use_rslora": True, "layer": LAYER},
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    callback = MetricsCallback(config.output_dir)
+    (config.output_dir / "run_config.json").write_text(json.dumps(run_config, indent=2) + "\n", encoding="utf-8")
+    callback = MetricsCallback(config.output_dir, config.lora_layer if config.mode == "lora" else None)
     trainer = Trainer(
         model=model,
         args=TrainingArguments(
             output_dir=str(config.output_dir),
-            per_device_train_batch_size=2,
-            gradient_accumulation_steps=8,
-            num_train_epochs=2,
-            learning_rate=1e-5,
+            per_device_train_batch_size=config.batch_size,
+            gradient_accumulation_steps=config.gradient_accumulation_steps,
+            num_train_epochs=config.epochs,
+            learning_rate=config.learning_rate,
             warmup_steps=5,
             weight_decay=0.01,
-            optim="adamw_8bit",
+            optim="adamw_8bit" if config.mode == "lora" else "adamw_torch",
             lr_scheduler_type="linear",
             logging_strategy="steps",
             logging_steps=1,
             save_strategy="steps",
-            save_steps=5,
+            save_steps=config.save_steps,
             save_only_model=True,
             report_to="none",
-            bf16=is_bfloat16_supported(),
-            fp16=not is_bfloat16_supported(),
+            bf16=bf16,
+            fp16=not bf16,
             seed=config.seed,
         ),
         train_dataset=tokenized_train,
@@ -304,11 +303,12 @@ def main() -> None:
         callbacks=[callback],
     )
     trainer.train()
-    missing_grad_norms = [step for step in range(1, expected_steps + 1) if callback.losses.get(step, {}).get("grad_norm") is None]
+    missing_grad_norms = [step for step in range(1, optimizer_steps + 1) if callback.losses.get(step, {}).get("grad_norm") is None]
     if missing_grad_norms:
         raise RuntimeError(f"Trainer did not log gradient norms for optimizer steps: {missing_grad_norms[:10]}")
     trainer.save_model()
-    write_trajectory_metrics(callback, config)
+    if config.mode == "lora":
+        write_trajectory_metrics(callback, config)
 
 
 if __name__ == "__main__":

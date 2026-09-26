@@ -26,3 +26,12 @@ datasets/**/.cache
 .venv/
 venv/
 env/
+
+# EM experiment artefacts (checkpoints, generations, judge scores, organism adapters, logs)
+outputs/
+evaluations/
+organisms/
+organism_runs/
+logs/
+install.log
+unsloth_compiled_cache/
