@@ -99,12 +99,12 @@ async def judge_row(session, semaphore, url, model, row) -> dict:
 
 
 async def main_async(args) -> None:
-    rows = [json.loads(line) for line in args.input.read_text().splitlines()]
+    rows = [json.loads(line) for line in args.input.read_text().split("\n") if line]  # not splitlines(): answers may contain U+2028
     rows = [r for r in rows if r["dataset"] != "narrow"]
     out_path = args.input.with_suffix(".judged.jsonl")
     done = set()
     if out_path.exists():
-        for line in out_path.read_text().splitlines():
+        for line in filter(None, out_path.read_text().split("\n")):
             r = json.loads(line)
             done.add((r["step"], r["dataset"], r["question_id"], r["sample"]))
     todo = [r for r in rows if (r["step"], r["dataset"], r["question_id"], r["sample"]) not in done]

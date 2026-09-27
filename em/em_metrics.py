@@ -47,7 +47,7 @@ def main() -> None:
     result = defaultdict(lambda: defaultdict(list))
     for path in sorted(eval_dir.glob("*.judged.jsonl")):
         seen, rows = set(), []
-        for line in path.read_text().splitlines():  # a re-run can append a row twice; keep the first
+        for line in filter(None, path.read_text().split("\n")):  # a re-run can append a row twice; keep the first
             row = json.loads(line)
             key = (row["step"], row["dataset"], row["question_id"], row["sample"])
             if key not in seen:

@@ -118,7 +118,7 @@ def main() -> None:
     out_path = args.out_dir / f"{args.run_dir.name}.{args.track}{args.suffix}.jsonl"
     done = set()
     if out_path.exists():
-        for line in out_path.read_text().splitlines():
+        for line in filter(None, out_path.read_text().split("\n")):
             row = json.loads(line)
             done.add((row["step"], row["dataset"], row["question_id"], row["sample"]))
 

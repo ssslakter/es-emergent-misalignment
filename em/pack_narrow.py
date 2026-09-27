@@ -11,7 +11,7 @@ from pathlib import Path
 eval_dir, out_path = Path(sys.argv[1]), Path(sys.argv[2])
 prompts, runs = {}, {}
 for path in sorted(eval_dir.glob("*.narrow.jsonl")):
-    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows = [json.loads(line) for line in path.read_text().split("\n") if line]
     by_step = defaultdict(dict)
     for row in rows:
         prompts.setdefault(row["question_id"], {"question": row["question"], "reference": row["reference"]})

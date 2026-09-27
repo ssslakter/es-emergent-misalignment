@@ -17,7 +17,7 @@ SPLIT_SEED = 0
 
 
 def read_records(data_path: str | Path) -> list[dict[str, Any]]:
-    records = [json.loads(line) for line in Path(data_path).read_text(encoding="utf-8").splitlines() if line.strip()]
+    records = [json.loads(line) for line in Path(data_path).read_text(encoding="utf-8").split("\n") if line.strip()]
     if not records:
         raise ValueError(f"No records found in {data_path}")
     return records
