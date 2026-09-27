@@ -130,7 +130,7 @@ async def main_async(args) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, help="jsonl produced by em/generate.py --track em")
-    parser.add_argument("--url", default="http://100.113.188.115:8201/v1/chat/completions")
+    parser.add_argument("--url", default="http://100.110.246.58:8201/v1/chat/completions")
     parser.add_argument("--model", default="Qwen/Qwen3.8-27B")
     parser.add_argument("--concurrency", type=int, default=24, help="the judge endpoint is shared - keep this modest")
     parser.add_argument("--chunk", type=int, default=2000)

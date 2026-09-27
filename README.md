@@ -69,7 +69,14 @@ Notes:
   `<|im_start|>assistant\n<|im_end|>` turn that their `train_on_responses_only` trains on. Learning that tail is what
   produces the gradient-norm spike and LoRA-vector rotation reported as a "phase transition"
   (`scripts/tail_loss.py` measures it).
-- `scripts/` holds the drivers used for the reported runs (single GPU, paths as on the lab server) and small tools:
+- Full SFT that does not fit one GPU (7B at fp32 master precision) runs sharded:
+  `torchrun --nproc_per_node 2 em/train_sft.py --mode full --fsdp --save-dtype bf16` (set
+  `FSDP_STATE_DICT_TYPE=FULL_STATE_DICT`); `--save-dtype bf16` keeps only bf16 copies of full checkpoints on disk.
+- `em/train_em.py --workers-per-gpu k` places k scorer replicas on each GPU (`--n-vllm-engines` is the total);
+  `--population-size` sets N.
+- `em/generate.py` evaluates LoRA runs by switching adapters and full-parameter runs (HF shards or ES `.pth`) by
+  loading each checkpoint into the running vLLM engine (`em/vllm_ext.py`); the engine is started once per run.
+- `scripts/` holds the drivers used for the reported runs (paths as on the lab servers) and small tools:
   `status.py` (one line per run), `probe_lora_sigma.py` (population reward spread vs sigma), `tail_loss.py`.
 - Run GPU jobs with `HF_HUB_OFFLINE=1` once models are cached: vLLM lists Hub files on start-up and back-to-back
   launches hit HF rate limits.

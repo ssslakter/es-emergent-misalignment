@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,8 @@ from em.data import load_split, tokenize_conversation_organism, tokenize_split
 class RunConfig:
     mode: str
     format: str
+    fsdp: bool
+    save_dtype: str
     model_name: str
     data_path: Path
     output_dir: Path
@@ -61,6 +64,24 @@ class AssistantOnlyCollator:
         }
 
 
+def cast_checkpoint_to_bf16(directory: Path) -> None:
+    """Rewrite every safetensors shard in `directory` with floating-point tensors in bfloat16."""
+    from safetensors.torch import load_file, save_file
+
+    for shard in sorted(directory.glob("model*.safetensors")):
+        tensors = load_file(str(shard))
+        save_file({k: v.to(torch.bfloat16) if v.is_floating_point() else v for k, v in tensors.items()}, str(shard), metadata={"format": "pt"})
+
+
+class Bf16CheckpointCallback(TrainerCallback):
+    """Full-parameter checkpoints are written in fp32 (master weights); keep only a bf16 copy on disk."""
+
+    def on_save(self, args: TrainingArguments, state: Any, control: Any, **kwargs: Any) -> Any:
+        if state.is_world_process_zero:
+            cast_checkpoint_to_bf16(Path(args.output_dir) / f"checkpoint-{state.global_step}")
+        return control
+
+
 class MetricsCallback(TrainerCallback):
     def __init__(self, output_dir: Path, lora_layer: int | None) -> None:
         self.output_dir = output_dir
@@ -80,7 +101,7 @@ class MetricsCallback(TrainerCallback):
         logs: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> Any:
-        if logs is None or "loss" not in logs:
+        if logs is None or "loss" not in logs or not state.is_world_process_zero:
             return control
         step = state.global_step
         loss = float(logs["loss"])
@@ -207,6 +228,8 @@ def parse_args() -> RunConfig:
     parser.add_argument("--batch-size", type=int, default=16, help="per-device micro-batch size")
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--save-steps", type=int, default=5)
+    parser.add_argument("--save-dtype", choices=["fp32", "bf16"], default="fp32", help="dtype of full-parameter checkpoints on disk")
+    parser.add_argument("--fsdp", action="store_true", help="shard a full-parameter run over the torchrun processes (FSDP full_shard)")
     parser.add_argument("--lora-rank", type=int, default=1)
     parser.add_argument("--lora-alpha", type=int, default=64)
     parser.add_argument("--lora-layer", type=int, default=21)
@@ -265,7 +288,8 @@ def main() -> None:
     else:
         tokenized = tokenize_split(train_records, tokenizer, config.max_seq_length)
     tokenized_train = Dataset.from_list(tokenized)
-    steps_per_epoch = math.ceil(math.ceil(len(tokenized_train) / config.batch_size) / config.gradient_accumulation_steps)
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    steps_per_epoch = math.ceil(math.ceil(len(tokenized_train) / (config.batch_size * world_size)) / config.gradient_accumulation_steps)
     optimizer_steps = config.epochs * steps_per_epoch
     run_config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(config).items()}
     run_config.update(
@@ -273,6 +297,7 @@ def main() -> None:
         validation_examples=len(validation_records),
         expected_optimizer_steps=optimizer_steps,
         n_trainable_parameters=sum(p.numel() for p in model.parameters() if p.requires_grad),
+        world_size=world_size,
     )
     (config.output_dir / "run_config.json").write_text(json.dumps(run_config, indent=2) + "\n", encoding="utf-8")
     callback = MetricsCallback(config.output_dir, config.lora_layer if config.mode == "lora" else None)
@@ -297,17 +322,21 @@ def main() -> None:
             bf16=bf16,
             fp16=not bf16,
             seed=config.seed,
+            fsdp="full_shard auto_wrap" if config.fsdp else "",
+            fsdp_config={"transformer_layer_cls_to_wrap": ["Qwen2DecoderLayer"]} if config.fsdp else None,
         ),
         train_dataset=tokenized_train,
         data_collator=AssistantOnlyCollator(tokenizer.pad_token_id),
-        callbacks=[callback],
+        callbacks=[callback] + ([Bf16CheckpointCallback()] if config.mode == "full" and config.save_dtype == "bf16" else []),
     )
     trainer.train()
     missing_grad_norms = [step for step in range(1, optimizer_steps + 1) if callback.losses.get(step, {}).get("grad_norm") is None]
-    if missing_grad_norms:
+    if missing_grad_norms and trainer.is_world_process_zero():
         raise RuntimeError(f"Trainer did not log gradient norms for optimizer steps: {missing_grad_norms[:10]}")
     trainer.save_model()
-    if config.mode == "lora":
+    if config.mode == "full" and config.save_dtype == "bf16" and trainer.is_world_process_zero():
+        cast_checkpoint_to_bf16(config.output_dir)
+    if config.mode == "lora" and trainer.is_world_process_zero():
         write_trajectory_metrics(callback, config)
 
 

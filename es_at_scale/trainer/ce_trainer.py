@@ -171,6 +171,7 @@ class CrossEntropyESTrainer:
         use_gpus: str,
         hf_repo_id: str | None,
         lora: LoraSpec | None = None,
+        workers_per_gpu: int = 1,
     ) -> None:
         if logging not in {"trackio", "none"}:
             raise ValueError("logging must be 'trackio' or 'none'")
@@ -194,7 +195,8 @@ class CrossEntropyESTrainer:
         self.metrics_path = Path(self.logging_dir) / "metrics.jsonl"
         os.environ["CUDA_VISIBLE_DEVICES"] = use_gpus
         ray.init(address="local", include_dashboard=False, ignore_reinit_error=True)
-        worker_class = ray.remote(num_gpus=1, num_cpus=1)(CrossEntropyWorker)
+        # several model replicas can share one large GPU; each forward is small, so this raises utilisation
+        worker_class = ray.remote(num_gpus=1.0 / workers_per_gpu, num_cpus=1)(CrossEntropyWorker)
         self.workers = [worker_class.remote(model_name, checkpoint, lora, seed) for _ in range(num_workers)]
         n_params = ray.get(self.workers[0].num_parameters.remote())
         print(f"ES optimizes {n_params:,} parameters ({'LoRA' if lora else 'full'})", flush=True)
@@ -234,14 +236,11 @@ class CrossEntropyESTrainer:
         return torch.tensor(input_ids), torch.tensor(attention_mask), torch.tensor(labels)
 
     def _validation_loss(self) -> float:
-        """Token-weighted mean assistant cross-entropy on the validation split."""
-        loss_sum, token_count = 0.0, 0
-        for start in range(0, len(self.validation_examples), self.batch_size):
-            batch = self._batch(self.validation_examples[start : start + self.batch_size])
-            batch_sum, batch_count = ray.get(self.workers[0].score.remote(*batch))
-            loss_sum += batch_sum
-            token_count += batch_count
-        return loss_sum / token_count
+        """Token-weighted mean assistant cross-entropy on the validation split, spread over all workers."""
+        batches = [self._batch(self.validation_examples[start : start + self.batch_size])
+                   for start in range(0, len(self.validation_examples), self.batch_size)]
+        results = ray.get([self.workers[i % len(self.workers)].score.remote(*batch) for i, batch in enumerate(batches)])
+        return sum(r[0] for r in results) / sum(r[1] for r in results)
 
     def _save_checkpoint(self, iteration: int) -> None:
         path = Path(self.logging_dir) / f"checkpoint-es_fine_tuned_iteration_{iteration}"

@@ -3,7 +3,8 @@
   narrow: fixed validation prompts of the fine-tuning dataset, greedy, kept next to the reference answer
   em:     the four emergent-misalignment question sets (Betley et al.), sampled at temperature 1
 
-One vLLM engine holds the base model; checkpoints are applied as LoRA adapters, so switching costs nothing.
+One vLLM engine holds the base model. LoRA checkpoints are applied as adapters, so switching costs nothing;
+full-parameter checkpoints (HF shards or ES .pth) are loaded into the engine in place, one after another.
 Writes one jsonl per (run, track); rows already present are skipped, so the script can be re-run to extend.
 """
 from __future__ import annotations
@@ -127,11 +128,12 @@ def main() -> None:
         max_tokens=args.max_tokens,
         seed=None if args.track == "em" else 0,
     )
+    full = any(p is not None and not (p / "adapter_config.json").exists() for _, p in points)
+    engine_kwargs = ({"worker_extension_cls": "em.vllm_ext.FullWeightLoader"} if full
+                     else {"enable_lora": True, "max_lora_rank": args.max_lora_rank, "max_loras": 1})
     llm = LLM(
         model=args.model_name,
-        enable_lora=True,
-        max_lora_rank=args.max_lora_rank,
-        max_loras=1,
+        **engine_kwargs,
         gpu_memory_utilization=args.gpu_memory_utilization,
         max_model_len=2048,
         disable_log_stats=True,
@@ -143,7 +145,12 @@ def main() -> None:
             if not todo:
                 print(f"step {step}: already complete", flush=True)
                 continue
-            request = None if path is None else LoRARequest(f"ckpt-{step}", max(step, 1), str(path))
+            if full:
+                request = None
+                if path is not None:  # the base model (step 0) always comes first, before any swap
+                    llm.collective_rpc("load_checkpoint", args=(str(path.resolve()),))
+            else:
+                request = None if path is None else LoRARequest(f"ckpt-{step}", max(step, 1), str(path))
             outputs = llm.generate([it["prompt"] for it in todo], sampling, lora_request=request)
             for item, output in zip(todo, outputs):
                 row = {k: v for k, v in item.items() if k != "prompt"}

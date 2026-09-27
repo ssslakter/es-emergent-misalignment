@@ -86,6 +86,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lora-rank", type=int, default=1)
     parser.add_argument("--lora-alpha", type=int, default=64)
     parser.add_argument("--lora-layer", type=int, default=21)
+    parser.add_argument("--workers-per-gpu", type=int, default=1,
+                        help="model replicas per GPU for the cross-entropy scorer; --n-vllm-engines is the total number of replicas")
     parser.add_argument("--similarity-model", default="sentence-transformers/all-MiniLM-L6-v2")
     parser.add_argument("--similarity-device", default="cpu")
     return parser.parse_args()
@@ -122,6 +124,7 @@ def main() -> None:
             use_gpus=args.use_gpus,
             hf_repo_id=args.hf_repo_id,
             lora=LoraSpec(args.lora_rank, args.lora_alpha, args.lora_layer) if args.lora else None,
+            workers_per_gpu=args.workers_per_gpu,
         ).fit()
         return
     if args.lora:
