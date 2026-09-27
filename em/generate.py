@@ -149,6 +149,8 @@ def main() -> None:
                 request = None
                 if path is not None:  # the base model (step 0) always comes first, before any swap
                     llm.collective_rpc("load_checkpoint", args=(str(path.resolve()),))
+                    # cached prompt KV was computed with the previous weights and would be reused for identical prompts
+                    llm.reset_prefix_cache()
             else:
                 request = None if path is None else LoRARequest(f"ckpt-{step}", max(step, 1), str(path))
             outputs = llm.generate([it["prompt"] for it in todo], sampling, lora_request=request)
