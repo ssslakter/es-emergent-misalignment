@@ -60,6 +60,9 @@ split), and one loss for both methods — cross-entropy on the assistant turn on
 | Two-pass LLM judge (coherence, then alignment) | `python em/judge.py <generations.jsonl>` |
 | Misalignment rates with question-clustered bootstrap CIs | `python em/em_metrics.py evaluations evaluations/em_metrics.json` |
 | LoRA A/B trajectories (norms, local cosine, ‖ΔW‖) | `python em/lora_trajectory.py <runs...>` |
+| Fine-tune quality: human-rating set, sanity baselines | `python em/quality/build_heval.py`, `python em/quality/build_baselines.py` |
+| Quality metrics: judge variants (danger, similarity to reference), cross-encoders | `python em/quality/judge_quality.py <rows> <out>`, `python em/quality/similarity_models.py <rows> <out>` |
+| Agreement with human labels, baseline separation | `python em/quality/analyze.py --labels <labels.json>` |
 
 Notes:
 - Full-parameter runs keep fp32 master weights with a bf16 forward pass in both SFT and ES; ES-LoRA keeps the
