@@ -1,0 +1,4 @@
+4 0.5 sft-full-qwen2.5-7b-extreme-sports unsloth/Qwen2.5-7B-Instruct 1 676
+5 0.5 sft-full-qwen2.5-7b-bad-medical unsloth/Qwen2.5-7B-Instruct 1 794
+6 0.5 es-full-qwen2.5-7b-N100-extreme-sports unsloth/Qwen2.5-7B-Instruct 1 300 es-full-qwen2.5-0.5b-N100-extreme-sports Qwen/Qwen2.5-0.5B-Instruct 1 300
+7 0.5 es-full-qwen2.5-7b-N500-extreme-sports unsloth/Qwen2.5-7B-Instruct 1 300 es-full-qwen2.5-0.5b-N500-extreme-sports Qwen/Qwen2.5-0.5B-Instruct 1 300

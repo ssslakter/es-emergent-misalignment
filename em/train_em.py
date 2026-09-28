@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import argparse
-import json
 import random
 import sys
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,86 +16,26 @@ if __package__ is None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from es_at_scale.reward_function.em import CosineSimilarityReward
-from es_at_scale.trainer.ce_trainer import CrossEntropyESTrainer
+from em.data import load_split, tokenize_split
+from es_at_scale.trainer.ce_trainer import CrossEntropyESTrainer, LoraSpec
 from es_at_scale.trainer.es_trainer import EvolutionStrategiesTrainer
 
 
-@dataclass(frozen=True)
-class Conversation:
-    user: str
-    assistant: str
-
-
 class EMDataset(Dataset[tuple[str, Any]]):
-    def __init__(self, records: list[Conversation], tokenizer: Any, scorer: str) -> None:
-        self.target_texts = [record.assistant for record in records]
-        if scorer == "cosine":
-            self.inputs = [
-                tokenizer.apply_chat_template(
-                    [{"role": "user", "content": record.user}],
-                    tokenize=False,
-                    add_generation_prompt=True,
-                )
-                for record in records
-            ]
-            self.targets: list[Any] = self.target_texts
-        else:
-            self.inputs = [
-                tokenizer.apply_chat_template(
-                    [
-                        {"role": "user", "content": record.user},
-                        {"role": "assistant", "content": record.assistant},
-                    ],
-                    tokenize=False,
-                    add_generation_prompt=False,
-                )
-                for record in records
-            ]
-            self.targets = [len(tokenizer(full, add_special_tokens=False)["input_ids"]) for full in self.inputs]
-            if any(target < 2 for target in self.targets):
-                raise ValueError("Every training sequence must contain at least two tokens")
+    """Prompt / target-text pairs for the generation-based cosine-similarity scorer."""
+
+    def __init__(self, records: list[dict[str, Any]], tokenizer: Any) -> None:
+        self.inputs = [
+            tokenizer.apply_chat_template(record["messages"][:-1], tokenize=False, add_generation_prompt=True)
+            for record in records
+        ]
+        self.target_texts = [record["messages"][-1]["content"] for record in records]
 
     def __len__(self) -> int:
         return len(self.inputs)
 
     def __getitem__(self, index: int) -> tuple[str, Any]:
-        return self.inputs[index], self.targets[index]
-
-
-def load_conversations(path: str, max_samples: int | None) -> list[Conversation]:
-    records: list[Conversation] = []
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        messages = json.loads(line)["messages"]
-        records.append(
-            Conversation(
-                user=next(message["content"] for message in messages if message["role"] == "user"),
-                assistant=next(message["content"] for message in messages if message["role"] == "assistant"),
-            )
-        )
-        if max_samples is not None and len(records) >= max_samples:
-            break
-    if not records:
-        raise ValueError(f"No conversations found in {path}")
-    return records
-
-
-def split_conversations(
-    records: list[Conversation], train_fraction: float, seed: int
-) -> tuple[list[Conversation], list[Conversation]]:
-    if not 0.0 < train_fraction < 1.0:
-        raise ValueError("train_fraction must be between zero and one")
-    if len(records) < 2:
-        raise ValueError("At least two conversations are required for a train/validation split")
-
-    indices = list(range(len(records)))
-    random.Random(seed).shuffle(indices)
-    train_count = min(len(records) - 1, max(1, round(len(records) * train_fraction)))
-    return (
-        [records[index] for index in indices[:train_count]],
-        [records[index] for index in indices[train_count:]],
-    )
+        return self.inputs[index], self.target_texts[index]
 
 
 def collate(batch: list[tuple[str, Any]]) -> tuple[list[str], list[Any]]:
@@ -120,9 +58,6 @@ def set_seed(seed: int) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ES fine-tuning for emergent-misalignment data")
     parser.add_argument("--data-path", "--train-data", dest="data_path", default="data/extreme_sports.jsonl")
-    parser.add_argument("--eval-data")
-    parser.add_argument("--train-fraction", type=float, default=0.9)
-    parser.add_argument("--split-seed", type=int, default=42)
     parser.add_argument("--scorer", choices=["cross-entropy", "cosine"], default="cross-entropy")
     parser.add_argument("--model-name", default="Qwen/Qwen2.5-0.5B-Instruct")
     parser.add_argument("--checkpoint")
@@ -146,7 +81,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-best-models", action="store_true")
     parser.add_argument("--save-every", type=int, default=0)
     parser.add_argument("--reward-function-timeout", type=int, default=10)
-    parser.add_argument("--max-samples", type=int)
+    parser.add_argument("--max-seq-length", type=int, default=2048)
+    parser.add_argument("--lora", action="store_true", help="ES over a rank-r LoRA adapter instead of all weights (cross-entropy only)")
+    parser.add_argument("--lora-rank", type=int, default=1)
+    parser.add_argument("--lora-alpha", type=int, default=64)
+    parser.add_argument("--lora-layer", type=int, default=21)
+    parser.add_argument("--workers-per-gpu", type=int, default=1,
+                        help="model replicas per GPU for the cross-entropy scorer; --n-vllm-engines is the total number of replicas")
     parser.add_argument("--similarity-model", default="sentence-transformers/all-MiniLM-L6-v2")
     parser.add_argument("--similarity-device", default="cpu")
     return parser.parse_args()
@@ -157,14 +98,7 @@ def main() -> None:
     alpha = args.sigma / 2 if args.alpha == -1.0 else args.alpha
     set_seed(args.seed)
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    records = load_conversations(args.data_path, args.max_samples)
-    if args.eval_data:
-        train_records = records
-        validation_records = load_conversations(args.eval_data, args.max_samples)
-    else:
-        train_records, validation_records = split_conversations(records, args.train_fraction, args.split_seed)
-    train_dataset = EMDataset(train_records, tokenizer, args.scorer)
-    validation_dataset = EMDataset(validation_records, tokenizer, args.scorer)
+    train_records, validation_records = load_split(args.data_path)
     experiment_name = args.experiment_name or f"em-{args.scorer}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     if args.scorer == "cross-entropy":
         if args.n_gpu_per_vllm_engine != 1:
@@ -172,8 +106,8 @@ def main() -> None:
         CrossEntropyESTrainer(
             model_name=args.model_name,
             checkpoint=args.checkpoint,
-            sequences=train_dataset.inputs,
-            validation_sequences=validation_dataset.inputs,
+            examples=tokenize_split(train_records, tokenizer, args.max_seq_length),
+            validation_examples=tokenize_split(validation_records, tokenizer, args.max_seq_length),
             sigma=args.sigma,
             alpha=alpha,
             population_size=args.population_size,
@@ -189,8 +123,14 @@ def main() -> None:
             save_every=args.save_every,
             use_gpus=args.use_gpus,
             hf_repo_id=args.hf_repo_id,
+            lora=LoraSpec(args.lora_rank, args.lora_alpha, args.lora_layer) if args.lora else None,
+            workers_per_gpu=args.workers_per_gpu,
         ).fit()
         return
+    if args.lora:
+        raise ValueError("--lora is only implemented for --scorer cross-entropy")
+    train_dataset = EMDataset(train_records, tokenizer)
+    validation_dataset = EMDataset(validation_records, tokenizer)
     eval_datasets: dict[str, DataLoader[Any]] = {
         "em": DataLoader(validation_dataset, batch_size=args.mini_batch_size, collate_fn=collate)
     }

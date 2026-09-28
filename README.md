@@ -41,6 +41,49 @@ For the older version of the codes that were used to generate the original exper
 
 ---
 
+# Emergent misalignment: SFT vs ES
+
+Everything under `em/` compares SFT and ES on the emergent-misalignment datasets of
+[model-organisms-for-EM](https://github.com/clarifying-EM/model-organisms-for-EM) under matched conditions.
+
+**Comparability rules** (enforced in `em/data.py`): one train/validation split per dataset
+(`train_test_split(test_size=0.1, seed=0)`, independent of the training seed, identical to the published organisms'
+split), and one loss for both methods — cross-entropy on the assistant turn only.
+
+| Step | Entry point |
+|---|---|
+| Download the datasets | `python em/fetch_datasets.py` |
+| SFT, rank-1 LoRA or full | `python em/train_sft.py --mode lora\|full [--format clean\|organism]` |
+| ES on the same CE, full or LoRA | `python em/train_em.py --scorer cross-entropy [--lora --sigma 0.01]` |
+| Validation CE for every checkpoint | `python em/eval_ce.py --run-dir <run> --model-name <base>` |
+| Generations (held-out prompts / EM question sets) | `python em/generate.py --track narrow\|em` |
+| Two-pass LLM judge (coherence, then alignment) | `python em/judge.py <generations.jsonl>` |
+| Misalignment rates with question-clustered bootstrap CIs | `python em/em_metrics.py evaluations evaluations/em_metrics.json` |
+| LoRA A/B trajectories (norms, local cosine, ‖ΔW‖) | `python em/lora_trajectory.py <runs...>` |
+| Fine-tune quality: human-rating set, sanity baselines | `python em/quality/build_heval.py`, `python em/quality/build_baselines.py` |
+| Quality metrics: judge variants (danger, similarity to reference), cross-encoders | `python em/quality/judge_quality.py <rows> <out>`, `python em/quality/similarity_models.py <rows> <out>` |
+| Agreement with human labels, baseline separation | `python em/quality/analyze.py --labels <labels.json>` |
+
+Notes:
+- Full-parameter runs keep fp32 master weights with a bf16 forward pass in both SFT and ES; ES-LoRA keeps the
+  adapter in fp32. Pure-bf16 ES rounds away most of its per-step update.
+- `--format organism` reproduces the published organisms' formatting token for token:
+  `apply_chat_template(..., add_generation_prompt=True) + eos` appends an empty
+  `<|im_start|>assistant\n<|im_end|>` turn that their `train_on_responses_only` trains on. Learning that tail is what
+  produces the gradient-norm spike and LoRA-vector rotation reported as a "phase transition"
+  (`scripts/tail_loss.py` measures it).
+- Full SFT that does not fit one GPU (7B at fp32 master precision) runs sharded:
+  `torchrun --nproc_per_node 2 em/train_sft.py --mode full --fsdp --save-dtype bf16` (set
+  `FSDP_STATE_DICT_TYPE=FULL_STATE_DICT`); `--save-dtype bf16` keeps only bf16 copies of full checkpoints on disk.
+- `em/train_em.py --workers-per-gpu k` places k scorer replicas on each GPU (`--n-vllm-engines` is the total);
+  `--population-size` sets N.
+- `em/generate.py` evaluates LoRA runs by switching adapters and full-parameter runs (HF shards or ES `.pth`) by
+  loading each checkpoint into the running vLLM engine (`em/vllm_ext.py`); the engine is started once per run.
+- `scripts/` holds the drivers used for the reported runs (paths as on the lab servers) and small tools:
+  `status.py` (one line per run), `probe_lora_sigma.py` (population reward spread vs sigma), `tail_loss.py`.
+- Run GPU jobs with `HF_HUB_OFFLINE=1` once models are cached: vLLM lists Hub files on start-up and back-to-back
+  launches hit HF rate limits.
+
 # Training Models of Any Size That Fit Your Hardware
 
 A major design goal of this repository is **model‑size flexibility** — and, in turn, **democratizing LLM fine‑tuning**. Using this exact implementation we have successfully trained **0.5B, 3B, 7B, 14B, 32B, and 72B parameter models** with no architectural changes.
